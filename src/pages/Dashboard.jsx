@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Plus, Search, ChevronLeft, ChevronRight, Eye, Edit2, Trash2, Calendar as CalendarIcon } from "lucide-react";
-import toast, { Toaster } from "react-hot-toast";
+import { Plus, Search, ChevronLeft, ChevronRight, Eye, Edit2, Trash2 } from "lucide-react";
+import toast from "react-hot-toast";
 import apiClient from "../utils/apiClient";
-import { Loader2 } from "lucide-react";
 
 // modal
 import DayDetailModal from "../components/modals/DayDetailModal";
@@ -98,12 +97,42 @@ const monthNames = [
 
 const formatDisplayDate = (dateString) => {
     if (!dateString) return "";
-    const dateObj = new Date(dateString);
+    const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateString);
+    const dateObj = dateMatch
+        ? new Date(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3]))
+        : new Date(dateString);
     if (isNaN(dateObj.getTime())) return dateString;
     const day = String(dateObj.getDate()).padStart(2, "0");
     const month = monthNames[dateObj.getMonth()].substring(0, 3);
     const year = dateObj.getFullYear();
     return `${day} ${month} ${year}`;
+};
+
+const normalizeTrade = (item) => {
+    const rawDateStr = item.trade_date || item.date || item.created_at || "";
+    const cleanRawDate = typeof rawDateStr === "string" && rawDateStr.includes("T")
+        ? rawDateStr.split("T")[0]
+        : rawDateStr;
+    const images = item.images?.data || item.images || [];
+    const followPlanValue = item.follow_plan;
+    const followPlan = followPlanValue === true
+        || followPlanValue === 1
+        || (typeof followPlanValue === "string" && ["1", "true", "yes"].includes(followPlanValue.trim().toLowerCase()));
+
+    return {
+        id: item.id,
+        rawDate: cleanRawDate,
+        date: cleanRawDate ? formatDisplayDate(cleanRawDate) : "",
+        pair: item.pair || "XAUUSD",
+        direction: (item.direction || item.type || "BUY").toUpperCase(),
+        entry: item.entry_price || item.entry || "0.00",
+        exit: item.exit_price || item.exit || "0.00",
+        lot: item.lot_size || item.lot || "0.00",
+        pnl: Number(item.pnl || 0),
+        followPlan,
+        notes: item.notes || "",
+        screenshot: images[0]?.image_url || item.image_url || item.screenshot || item.image || null,
+    };
 };
 
 export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" }, onLogout, onOpenAddModal }) {
@@ -162,41 +191,35 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
     const [currentDate, setCurrentDate] = useState(new Date(2026, 10, 1)); // Note: Month 10 = November
 
     const [trades, setTrades] = useState([]);
+    const [pageTrades, setPageTrades] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [isPageLoading, setIsPageLoading] = useState(true);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [tableRefreshKey, setTableRefreshKey] = useState(0);
+    const [pagination, setPagination] = useState({ from: 0, to: 0, total: 0, lastPage: 1 });
+    const isTableBusy = isLoading || isPageLoading;
 
 
     // 1. Fetch Data Master dari Backend
     const fetchTrades = async () => {
         setIsLoading(true);
         try {
-            const response = await apiClient.get("/trades");
+            const allTrades = [];
+            let page = 1;
+            let lastPage = 1;
 
-            const rawData = response.data?.data || response.data || [];
+            do {
+                const response = await apiClient.get("/trades", { params: { page } });
+                const rawData = response.data?.data;
+                if (!Array.isArray(rawData) || !response.data?.meta) {
+                    throw new Error("The trades response is missing its paginated data.");
+                }
+                allTrades.push(...rawData.map(normalizeTrade));
+                lastPage = response.data.meta.last_page;
+                page += 1;
+            } while (page <= lastPage);
 
-            const normalizedTrades = rawData.map((item) => {
-                const rawDateStr = item.trade_date || item.date || item.created_at || "";
-                const cleanRawDate = typeof rawDateStr === "string" && rawDateStr.includes("T")
-                    ? rawDateStr.split("T")[0]
-                    : rawDateStr;
-                const images = item.images?.data || item.images || [];
-
-                return {
-                    id: item.id,
-                    rawDate: cleanRawDate,
-                    date: cleanRawDate ? formatDisplayDate(cleanRawDate) : "",
-                    pair: item.pair || "XAUUSD",
-                    direction: (item.direction || item.type || "BUY").toUpperCase(),
-                    entry: item.entry_price || item.entry || "0.00",
-                    exit: item.exit_price || item.exit || "0.00",
-                    lot: item.lot_size || item.lot || "0.00",
-                    pnl: Number(item.pnl || 0),
-                    followPlan: item.follow_plan !== undefined ? Boolean(Number(item.follow_plan)) : true,
-                    notes: item.notes || "",
-                    screenshot: images[0]?.image_url || item.image_url || item.screenshot || item.image || null,
-                };
-            });
-
-            setTrades(normalizedTrades);
+            setTrades(allTrades);
         } catch (error) {
             console.error("Fetch Trades Detailed Error:", error);
 
@@ -208,8 +231,61 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
     };
 
     useEffect(() => {
+        let isCurrentRequest = true;
+        const loadPage = async () => {
+            setIsPageLoading(true);
+            const params = { page: currentPage };
+            const search = searchTerm.trim();
+            if (search) params.search = search;
+            if (startDate) params.start_date = startDate;
+            if (endDate) params.end_date = endDate;
+            if (selectedPair && selectedPair !== "All pairs") params.pair = selectedPair;
+            if (selectedResult) params.result = selectedResult.toLowerCase();
+
+            try {
+                const response = await apiClient.get("/trades", { params });
+                if (!isCurrentRequest) return;
+                const meta = response.data?.meta;
+                const rawData = response.data?.data;
+                if (!meta || !Array.isArray(rawData)) {
+                    throw new Error("The trades response is missing its paginated data.");
+                }
+                if (currentPage > meta.last_page) {
+                    setCurrentPage(Math.max(meta.last_page, 1));
+                    return;
+                }
+                setPageTrades(rawData.map(normalizeTrade));
+                setPagination({
+                    from: meta.from || 0,
+                    to: meta.to || 0,
+                    total: meta.total,
+                    lastPage: meta.last_page,
+                });
+            } catch (error) {
+                if (isCurrentRequest) {
+                    console.error("Fetch paginated trades error:", error);
+                    toast.error(error.response?.data?.message || error.message || "Failed to load trades");
+                }
+            } finally {
+                if (isCurrentRequest) setIsPageLoading(false);
+            }
+        };
+
+        loadPage();
+        return () => {
+            isCurrentRequest = false;
+        };
+    }, [currentPage, searchTerm, startDate, endDate, selectedPair, selectedResult, tableRefreshKey]);
+
+    useEffect(() => {
         fetchTrades();
     }, []);
+
+    const refreshTrades = async () => {
+        setCurrentPage(1);
+        setTableRefreshKey((key) => key + 1);
+        await fetchTrades();
+    };
 
     // 2. Handler Hapus Trade (Tetap di Dashboard)
     const handleConfirmDelete = async (trade) => {
@@ -230,7 +306,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                 </div>
             );
 
-            fetchTrades(); // Refresh data kalender & tabel
+            await refreshTrades();
         } catch (error) {
             toast.error(error.response?.data?.message || "Failed to delete trade");
         }
@@ -287,29 +363,11 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
         });
     }, [trades, currentYear, currentMonthIndex]);
 
-    const filteredTrades = React.useMemo(() => {
-        const normalizedSearchTerm = searchTerm.trim().toLowerCase();
-        const normalizedResult = selectedResult.toLowerCase();
-
-        return trades.filter((trade) => {
-            const matchesSearch =
-                !normalizedSearchTerm ||
-                trade.pair.toLowerCase().includes(normalizedSearchTerm) ||
-                trade.notes.toLowerCase().includes(normalizedSearchTerm);
-            const matchesStartDate = !startDate || trade.rawDate >= startDate;
-            const matchesEndDate = !endDate || trade.rawDate <= endDate;
-            const matchesPair = !selectedPair || selectedPair === "All pairs" || trade.pair === selectedPair;
-            const pnl = Number(trade.pnl || 0);
-            const matchesResult =
-                !normalizedResult ||
-                normalizedResult === "all results" ||
-                ((normalizedResult === "profit" || normalizedResult === "win") && pnl > 0) ||
-                (normalizedResult === "loss" && pnl < 0) ||
-                (normalizedResult === "breakeven" && pnl === 0);
-
-            return matchesSearch && matchesStartDate && matchesEndDate && matchesPair && matchesResult;
-        });
-    }, [trades, searchTerm, startDate, endDate, selectedPair, selectedResult]);
+    const filteredTrades = pageTrades;
+    const visiblePages = Array.from(
+        { length: Math.max(0, Math.min(pagination.lastPage, currentPage + 2) - Math.max(1, currentPage - 2) + 1) },
+        (_, index) => Math.max(1, currentPage - 2) + index
+    );
 
 
 
@@ -350,7 +408,6 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
     // handler klik tanggal pada grid kalender
     const handleDayClick = (item) => {
 
-        const dateObj = new Date(item.year, item.month, item.day);
         const monthName = monthNames[item.month];
 
         const formattedDateString = `${item.day} ${monthName} ${item.year}`;
@@ -619,7 +676,9 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                 <div className="flex flex-row gap-3 justify-between items-center">
                     <div>
                         <h2 className="text-base font-bold text-slate-900">Trading Journal</h2>
-                        <p className="text-xs text-slate-400">{filteredTrades.length} of {trades.length} trades</p>
+                        <p className="text-xs text-slate-400">
+                            Showing {pagination.from}–{pagination.to} of {pagination.total} trades
+                        </p>
                     </div>
 
                     <button
@@ -643,7 +702,10 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                             type="text"
                             placeholder="Search pair or notes..."
                             value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
+                            onChange={(e) => {
+                                setSearchTerm(e.target.value);
+                                setCurrentPage(1);
+                            }}
                             className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/20 focus:border-emerald-600"
                         />
                     </div>
@@ -653,13 +715,19 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         <input
                             type="date"
                             value={startDate}
-                            onChange={(e) => setStartDate(e.target.value)}
+                            onChange={(e) => {
+                                setStartDate(e.target.value);
+                                setCurrentPage(1);
+                            }}
                             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 focus:outline-none"
                         />
                         <input
                             type="date"
                             value={endDate}
-                            onChange={(e) => setEndDate(e.target.value)}
+                            onChange={(e) => {
+                                setEndDate(e.target.value);
+                                setCurrentPage(1);
+                            }}
                             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 focus:outline-none"
                         />
                     </div>
@@ -667,7 +735,10 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                     {/* Select Pair Filter */}
                     <select
                         value={selectedPair}
-                        onChange={(e) => setSelectedPair(e.target.value)}
+                        onChange={(e) => {
+                            setSelectedPair(e.target.value);
+                            setCurrentPage(1);
+                        }}
                         className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 focus:outline-none"
                     >
                         <option value="">All pairs</option>
@@ -679,7 +750,10 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                     {/* Select Result Filter */}
                     <select
                         value={selectedResult}
-                        onChange={(e) => setSelectedResult(e.target.value)}
+                        onChange={(e) => {
+                            setSelectedResult(e.target.value);
+                            setCurrentPage(1);
+                        }}
                         className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 focus:outline-none"
                     >
                         <option value="">All results</option>
@@ -706,7 +780,15 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-xs">
-                            {filteredTrades.map((trade) => (
+                            {isTableBusy ? (
+                                <tr>
+                                    <td colSpan="9" className="py-8 text-center text-slate-400">Loading trades...</td>
+                                </tr>
+                            ) : filteredTrades.length === 0 ? (
+                                <tr>
+                                    <td colSpan="9" className="py-8 text-center text-slate-400">No trades match these filters.</td>
+                                </tr>
+                            ) : filteredTrades.map((trade) => (
                                 <tr key={trade.id} className="hover:bg-slate-50/80 transition-colors">
                                     <td className="py-3.5 px-4 text-slate-500 font-medium whitespace-nowrap">
                                         {trade.date}
@@ -764,6 +846,46 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         </tbody>
                     </table>
                 </div>
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                    <p className="text-xs text-slate-400">
+                        {pagination.total === 0
+                            ? "Showing 0 trades"
+                            : `Showing ${pagination.from}–${pagination.to} of ${pagination.total}`}
+                    </p>
+                    <nav className="flex items-center gap-1" aria-label="Trade table pagination">
+                        <button
+                            type="button"
+                            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                            disabled={currentPage === 1 || isTableBusy}
+                            className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50"
+                        >
+                            Previous
+                        </button>
+                        {visiblePages.map((page) => (
+                            <button
+                                key={page}
+                                type="button"
+                                onClick={() => setCurrentPage(page)}
+                                disabled={isTableBusy}
+                                aria-current={page === currentPage ? "page" : undefined}
+                                className={`min-w-8 px-2.5 py-1.5 border rounded-lg text-xs ${page === currentPage
+                                    ? "border-[#071B2B] bg-[#071B2B] text-white"
+                                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                                    }`}
+                            >
+                                {page}
+                            </button>
+                        ))}
+                        <button
+                            type="button"
+                            onClick={() => setCurrentPage((page) => Math.min(pagination.lastPage, page + 1))}
+                            disabled={currentPage >= pagination.lastPage || isTableBusy}
+                            className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50"
+                        >
+                            Next
+                        </button>
+                    </nav>
+                </div>
             </div>
 
             {/* render modal kalender*/}
@@ -786,7 +908,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                 }}
                 initialDate={addTradeInitialDate}
                 tradeToEdit={tradeToEdit}
-                onSave={fetchTrades}
+                onSave={refreshTrades}
             />
 
             {/* Render Modal View Trade */}

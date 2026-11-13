@@ -1,13 +1,18 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { X, ImagePlus, Loader2 } from "lucide-react";
 import apiClient from "../../utils/apiClient";
 import toast from "react-hot-toast";
 
 const STANDARD_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD", "US30"];
 
+const getLocalDateString = () => {
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+};
+
 // Helper konversi tanggal ke format ISO YYYY-MM-DD untuk <input type="date" />
 const formatDateToISO = (dateStr) => {
-    if (!dateStr) return new Date().toISOString().split("T")[0];
+    if (!dateStr) return getLocalDateString();
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
 
     const parsed = new Date(dateStr);
@@ -17,7 +22,7 @@ const formatDateToISO = (dateStr) => {
         const dd = String(parsed.getDate()).padStart(2, "0");
         return `${yyyy}-${mm}-${dd}`;
     }
-    return new Date().toISOString().split("T")[0];
+    return getLocalDateString();
 };
 
 export default function AddTradeModal({
@@ -219,7 +224,7 @@ export default function AddTradeModal({
                 );
             }
 
-            if (onSave) onSave(); // Refresh data Dashboard
+            if (onSave) await onSave(response.data?.data || response.data); // Refresh data Dashboard
             onClose(); // Tutup modal
 
         } catch (error) {

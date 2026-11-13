@@ -1,5 +1,4 @@
-import React, { useEffect } from "react";
-import { X, Plus, Eye, Edit2, Trash2, MarginTop } from "lucide-react";
+import { X, Plus, Eye, Edit2, Trash2 } from "lucide-react";
 
 export default function DayDetailModal({
   isOpen,
@@ -92,13 +91,13 @@ export default function DayDetailModal({
                         {trade.direction}
                       </span>
 
-                      {/* Badge Follow Plan (Yes) */}
-                      {trade.followPlan && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-[#047857] border border-emerald-200/60">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#047857]"></span>
-                          Yes
-                        </span>
-                      )}
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${trade.followPlan
+                        ? "bg-emerald-50 text-[#047857] border border-emerald-200/60"
+                        : "bg-rose-50 text-rose-600 border border-rose-200/60"
+                        }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${trade.followPlan ? "bg-[#047857]" : "bg-rose-600"}`}></span>
+                        {trade.followPlan ? "Yes" : "No"}
+                      </span>
                     </div>
 
                     {/* PnL & Tombol Aksi */}

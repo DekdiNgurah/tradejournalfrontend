@@ -8,7 +8,7 @@ const TradeContext = createContext();
 export const TradeProvider = ({ children }) => {
   const queryClient = useQueryClient();
 
-  // GET ALL TRADES (Mengambil daftar transaksi)
+  // mengambil data transaksi
   const { data: trades, isLoading, isError } = useQuery({
     queryKey: ["trades"],
     queryFn: async () => {
@@ -17,13 +17,13 @@ export const TradeProvider = ({ children }) => {
     },
   });
 
-  // SHOW TRADE DETAIL (Mengambil detail 1 transaksi berdasarkan ID)
+  // detail transaksi berdasarkan id
   const getTradeById = async (id) => {
     const res = await apiClient.get(`/trades/${id}`);
     return res.data.data;
   };
 
-  // ADD TRADE (Menambah transaksi baru)
+  // nambah transaksi baru
   const addTrade = async (formData) => {
     try {
       const response = await apiClient.post("/trades", formData);
@@ -37,7 +37,7 @@ export const TradeProvider = ({ children }) => {
     }
   };
 
-  // UPDATE TRADE (Memperbarui transaksi)
+  // perbarui transaksi
   const updateTrade = async (id, formData) => {
     try {
       const response = await apiClient.put(`/trades/${id}`, formData);
@@ -50,7 +50,7 @@ export const TradeProvider = ({ children }) => {
     }
   };
 
-  // DELETE TRADE (Menghapus transaksi)
+  // hapus transaksi
   const deleteTrade = useMutation({
     mutationFn: async (id) => await apiClient.delete(`/trades/${id}`),
     onSuccess: () => {
