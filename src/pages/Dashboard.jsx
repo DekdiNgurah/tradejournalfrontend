@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Plus, Search, ChevronLeft, ChevronRight, Eye, Edit2, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import apiClient from "../utils/apiClient";
@@ -197,8 +197,22 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
     const [currentPage, setCurrentPage] = useState(1);
     const [tableRefreshKey, setTableRefreshKey] = useState(0);
     const [pagination, setPagination] = useState({ from: 0, to: 0, total: 0, lastPage: 1 });
+    const [, setPageCache] = useState(() => new Map());
+    const pageCacheRef = useRef(new Map());
+    const inFlightRequests = useRef(new Map());
     const isTableBusy = isLoading || isPageLoading;
 
+    const requestTradesPage = (params) => {
+        const requestKey = JSON.stringify(params);
+        const existingRequest = inFlightRequests.current.get(requestKey);
+        if (existingRequest) return existingRequest;
+
+        const request = apiClient.get("/trades", { params }).finally(() => {
+            inFlightRequests.current.delete(requestKey);
+        });
+        inFlightRequests.current.set(requestKey, request);
+        return request;
+    };
 
     // 1. Fetch Data Master dari Backend
     const fetchTrades = async () => {
@@ -209,7 +223,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
             let lastPage = 1;
 
             do {
-                const response = await apiClient.get("/trades", { params: { page } });
+                const response = await requestTradesPage({ page });
                 const rawData = response.data?.data;
                 if (!Array.isArray(rawData) || !response.data?.meta) {
                     throw new Error("The trades response is missing its paginated data.");
@@ -233,7 +247,6 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
     useEffect(() => {
         let isCurrentRequest = true;
         const loadPage = async () => {
-            setIsPageLoading(true);
             const params = { page: currentPage };
             const search = searchTerm.trim();
             if (search) params.search = search;
@@ -241,9 +254,20 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
             if (endDate) params.end_date = endDate;
             if (selectedPair && selectedPair !== "All pairs") params.pair = selectedPair;
             if (selectedResult) params.result = selectedResult.toLowerCase();
+            const cacheKey = JSON.stringify(params);
+            const cachedPage = pageCacheRef.current.get(cacheKey);
+
+            if (cachedPage) {
+                setPageTrades(cachedPage.trades);
+                setPagination(cachedPage.pagination);
+                setIsPageLoading(false);
+                return;
+            }
+
+            setIsPageLoading(true);
 
             try {
-                const response = await apiClient.get("/trades", { params });
+                const response = await requestTradesPage(params);
                 if (!isCurrentRequest) return;
                 const meta = response.data?.meta;
                 const rawData = response.data?.data;
@@ -254,13 +278,19 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                     setCurrentPage(Math.max(meta.last_page, 1));
                     return;
                 }
-                setPageTrades(rawData.map(normalizeTrade));
-                setPagination({
+                const normalizedTrades = rawData.map(normalizeTrade);
+                const nextPagination = {
                     from: meta.from || 0,
                     to: meta.to || 0,
                     total: meta.total,
                     lastPage: meta.last_page,
-                });
+                };
+                setPageTrades(normalizedTrades);
+                setPagination(nextPagination);
+                const nextCache = new Map(pageCacheRef.current);
+                nextCache.set(cacheKey, { trades: normalizedTrades, pagination: nextPagination });
+                pageCacheRef.current = nextCache;
+                setPageCache(nextCache);
             } catch (error) {
                 if (isCurrentRequest) {
                     console.error("Fetch paginated trades error:", error);
@@ -281,7 +311,44 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
         fetchTrades();
     }, []);
 
-    const refreshTrades = async () => {
+    const refreshTrades = async (savedTrade) => {
+        pageCacheRef.current = new Map();
+        setPageCache(pageCacheRef.current);
+
+        if (savedTrade) {
+            const normalizedTrade = normalizeTrade(savedTrade);
+            if (tradeToEdit) {
+                setTrades((currentTrades) =>
+                    currentTrades.map((trade) => trade.id === normalizedTrade.id ? normalizedTrade : trade)
+                );
+                setPageTrades((currentTrades) =>
+                    currentTrades.map((trade) => trade.id === normalizedTrade.id ? normalizedTrade : trade)
+                );
+            } else {
+                setTrades((currentTrades) => [
+                    normalizedTrade,
+                    ...currentTrades.filter((trade) => trade.id !== normalizedTrade.id),
+                ]);
+                setPagination((currentPagination) => {
+                    const total = currentPagination.total + 1;
+                    return {
+                        ...currentPagination,
+                        from: total ? (currentPage - 1) * 10 + 1 : 0,
+                        to: Math.min(total, currentPage * 10),
+                        total,
+                        lastPage: Math.max(currentPagination.lastPage, Math.ceil(total / 10)),
+                    };
+                });
+                if (currentPage === 1) {
+                    setPageTrades((currentTrades) => [
+                        normalizedTrade,
+                        ...currentTrades.filter((trade) => trade.id !== normalizedTrade.id),
+                    ].slice(0, 10));
+                }
+            }
+            return;
+        }
+
         setCurrentPage(1);
         setTableRefreshKey((key) => key + 1);
         await fetchTrades();
