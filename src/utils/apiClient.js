@@ -1,12 +1,18 @@
 import axios from "axios";
 
+const rawApiUrl = (
+  import.meta.env.VITE_API_URL || "https://tradejournalbackend.dockhosting.cloud"
+)
+  .trim()
+  .replace(/\/+$/, "");
+
 const apiClient = axios.create({
-  // baseURL: `${import.meta.env.VITE_API_URL}/api`,
-  baseURL: "http://127.0.0.1:8000/api",
+  baseURL: `${rawApiUrl}/api`,
   headers: {
     "Content-Type": "application/json",
     Accept: "application/json",
   },
+  timeout: 15000,
 });
 
 // Interceptor Request
