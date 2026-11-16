@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { Plus, Search, ChevronLeft, ChevronRight, Eye, Edit2, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import apiClient from "../utils/apiClient";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 // modal
 import DayDetailModal from "../components/modals/DayDetailModal";
@@ -136,6 +137,7 @@ const normalizeTrade = (item) => {
 };
 
 export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" }, onLogout, onOpenAddModal }) {
+    const queryClient = useQueryClient();
 
     // state
     const [searchTerm, setSearchTerm] = useState("");
@@ -190,168 +192,44 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
     // kalender
     const [currentDate, setCurrentDate] = useState(new Date(2026, 10, 1)); // Note: Month 10 = November
 
-    const [trades, setTrades] = useState([]);
-    const [pageTrades, setPageTrades] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [isPageLoading, setIsPageLoading] = useState(true);
     const [currentPage, setCurrentPage] = useState(1);
-    const [tableRefreshKey, setTableRefreshKey] = useState(0);
-    const [pagination, setPagination] = useState({ from: 0, to: 0, total: 0, lastPage: 1 });
-    const [, setPageCache] = useState(() => new Map());
-    const pageCacheRef = useRef(new Map());
-    const inFlightRequests = useRef(new Map());
-    const isTableBusy = isLoading || isPageLoading;
+    const {
+        data: trades = [],
+        isLoading,
+        isError,
+        error,
+    } = useQuery({
+        queryKey: ["trades", "all"],
+        queryFn: async () => {
+            const response = await apiClient.get("/trades", { params: { all: 1 } });
+            const rawData = response.data?.data;
+            if (!Array.isArray(rawData)) {
+                throw new Error("The trades response is missing its data.");
+            }
+            return rawData.map(normalizeTrade);
+        },
+        staleTime: Infinity,
+        gcTime: 30 * 60 * 1000,
+        retry: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+    });
+    const isTableBusy = isLoading;
 
-    const requestTradesPage = (params) => {
-        const requestKey = JSON.stringify(params);
-        const existingRequest = inFlightRequests.current.get(requestKey);
-        if (existingRequest) return existingRequest;
-
-        const request = apiClient.get("/trades", { params }).finally(() => {
-            inFlightRequests.current.delete(requestKey);
-        });
-        inFlightRequests.current.set(requestKey, request);
-        return request;
-    };
-
-    // 1. Fetch Data Master dari Backend
-    const fetchTrades = async () => {
-        setIsLoading(true);
-        try {
-            const allTrades = [];
-            let page = 1;
-            let lastPage = 1;
-
-            do {
-                const response = await requestTradesPage({ page });
-                const rawData = response.data?.data;
-                if (!Array.isArray(rawData) || !response.data?.meta) {
-                    throw new Error("The trades response is missing its paginated data.");
-                }
-                allTrades.push(...rawData.map(normalizeTrade));
-                lastPage = response.data.meta.last_page;
-                page += 1;
-            } while (page <= lastPage);
-
-            setTrades(allTrades);
-        } catch (error) {
+    useEffect(() => {
+        if (isError) {
             console.error("Fetch Trades Detailed Error:", error);
-
-            const errorMsg = error.response?.data?.message || error.message || "Failed to load trades";
-            toast.error(errorMsg);
-        } finally {
-            setIsLoading(false);
+            toast.error(error.response?.data?.message || error.message || "Failed to load trades");
         }
-    };
+    }, [isError, error]);
 
-    useEffect(() => {
-        let isCurrentRequest = true;
-        const loadPage = async () => {
-            const params = { page: currentPage };
-            const search = searchTerm.trim();
-            if (search) params.search = search;
-            if (startDate) params.start_date = startDate;
-            if (endDate) params.end_date = endDate;
-            if (selectedPair && selectedPair !== "All pairs") params.pair = selectedPair;
-            if (selectedResult) params.result = selectedResult.toLowerCase();
-            const cacheKey = JSON.stringify(params);
-            const cachedPage = pageCacheRef.current.get(cacheKey);
-
-            if (cachedPage) {
-                setPageTrades(cachedPage.trades);
-                setPagination(cachedPage.pagination);
-                setIsPageLoading(false);
-                return;
-            }
-
-            setIsPageLoading(true);
-
-            try {
-                const response = await requestTradesPage(params);
-                if (!isCurrentRequest) return;
-                const meta = response.data?.meta;
-                const rawData = response.data?.data;
-                if (!meta || !Array.isArray(rawData)) {
-                    throw new Error("The trades response is missing its paginated data.");
-                }
-                if (currentPage > meta.last_page) {
-                    setCurrentPage(Math.max(meta.last_page, 1));
-                    return;
-                }
-                const normalizedTrades = rawData.map(normalizeTrade);
-                const nextPagination = {
-                    from: meta.from || 0,
-                    to: meta.to || 0,
-                    total: meta.total,
-                    lastPage: meta.last_page,
-                };
-                setPageTrades(normalizedTrades);
-                setPagination(nextPagination);
-                const nextCache = new Map(pageCacheRef.current);
-                nextCache.set(cacheKey, { trades: normalizedTrades, pagination: nextPagination });
-                pageCacheRef.current = nextCache;
-                setPageCache(nextCache);
-            } catch (error) {
-                if (isCurrentRequest) {
-                    console.error("Fetch paginated trades error:", error);
-                    toast.error(error.response?.data?.message || error.message || "Failed to load trades");
-                }
-            } finally {
-                if (isCurrentRequest) setIsPageLoading(false);
-            }
-        };
-
-        loadPage();
-        return () => {
-            isCurrentRequest = false;
-        };
-    }, [currentPage, searchTerm, startDate, endDate, selectedPair, selectedResult, tableRefreshKey]);
-
-    useEffect(() => {
-        fetchTrades();
-    }, []);
-
-    const refreshTrades = async (savedTrade) => {
-        pageCacheRef.current = new Map();
-        setPageCache(pageCacheRef.current);
-
-        if (savedTrade) {
-            const normalizedTrade = normalizeTrade(savedTrade);
-            if (tradeToEdit) {
-                setTrades((currentTrades) =>
-                    currentTrades.map((trade) => trade.id === normalizedTrade.id ? normalizedTrade : trade)
-                );
-                setPageTrades((currentTrades) =>
-                    currentTrades.map((trade) => trade.id === normalizedTrade.id ? normalizedTrade : trade)
-                );
-            } else {
-                setTrades((currentTrades) => [
-                    normalizedTrade,
-                    ...currentTrades.filter((trade) => trade.id !== normalizedTrade.id),
-                ]);
-                setPagination((currentPagination) => {
-                    const total = currentPagination.total + 1;
-                    return {
-                        ...currentPagination,
-                        from: total ? (currentPage - 1) * 10 + 1 : 0,
-                        to: Math.min(total, currentPage * 10),
-                        total,
-                        lastPage: Math.max(currentPagination.lastPage, Math.ceil(total / 10)),
-                    };
-                });
-                if (currentPage === 1) {
-                    setPageTrades((currentTrades) => [
-                        normalizedTrade,
-                        ...currentTrades.filter((trade) => trade.id !== normalizedTrade.id),
-                    ].slice(0, 10));
-                }
-            }
-            return;
-        }
-
+    const refreshTrades = (savedTrade) => {
+        const normalizedTrade = normalizeTrade(savedTrade);
+        queryClient.setQueryData(["trades", "all"], (currentTrades = []) => [
+            normalizedTrade,
+            ...currentTrades.filter((trade) => trade.id !== normalizedTrade.id),
+        ]);
         setCurrentPage(1);
-        setTableRefreshKey((key) => key + 1);
-        await fetchTrades();
     };
 
     // 2. Handler Hapus Trade (Tetap di Dashboard)
@@ -373,7 +251,10 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                 </div>
             );
 
-            await refreshTrades();
+            queryClient.setQueryData(["trades", "all"], (currentTrades = []) =>
+                currentTrades.filter((currentTrade) => currentTrade.id !== trade.id)
+            );
+            setCurrentPage(1);
         } catch (error) {
             toast.error(error.response?.data?.message || "Failed to delete trade");
         }
@@ -430,12 +311,39 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
         });
     }, [trades, currentYear, currentMonthIndex]);
 
-    const filteredTrades = pageTrades;
-    const visiblePages = Array.from(
-        { length: Math.max(0, Math.min(pagination.lastPage, currentPage + 2) - Math.max(1, currentPage - 2) + 1) },
-        (_, index) => Math.max(1, currentPage - 2) + index
-    );
+    const filteredTrades = React.useMemo(() => {
+        const search = searchTerm.trim().toLocaleLowerCase();
 
+        return trades.filter((trade) => {
+            if (search && !`${trade.pair} ${trade.notes}`.toLocaleLowerCase().includes(search)) return false;
+            if (startDate && (!trade.rawDate || trade.rawDate < startDate)) return false;
+            if (endDate && (!trade.rawDate || trade.rawDate > endDate)) return false;
+            if (selectedPair && trade.pair !== selectedPair) return false;
+
+            const pnl = Number(trade.pnl || 0);
+            if (selectedResult === "Profit" && pnl <= 0) return false;
+            if (selectedResult === "Loss" && pnl >= 0) return false;
+            if (selectedResult === "Breakeven" && pnl !== 0) return false;
+            return true;
+        });
+    }, [trades, searchTerm, startDate, endDate, selectedPair, selectedResult]);
+    const pagination = React.useMemo(() => {
+        const total = filteredTrades.length;
+        const lastPage = Math.max(1, Math.ceil(total / 10));
+        const page = Math.min(currentPage, lastPage);
+        return {
+            from: total ? (page - 1) * 10 + 1 : 0,
+            to: Math.min(total, page * 10),
+            total,
+            lastPage,
+        };
+    }, [filteredTrades.length, currentPage]);
+    const visiblePage = Math.min(currentPage, pagination.lastPage);
+    const pageTrades = filteredTrades.slice((visiblePage - 1) * 10, visiblePage * 10);
+    const visiblePages = Array.from(
+        { length: Math.max(0, Math.min(pagination.lastPage, visiblePage + 2) - Math.max(1, visiblePage - 2) + 1) },
+        (_, index) => Math.max(1, visiblePage - 2) + index
+    );
 
 
 
@@ -782,6 +690,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         <input
                             type="date"
                             value={startDate}
+                            max={endDate || undefined}
                             onChange={(e) => {
                                 setStartDate(e.target.value);
                                 setCurrentPage(1);
@@ -791,6 +700,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         <input
                             type="date"
                             value={endDate}
+                            min={startDate || undefined}
                             onChange={(e) => {
                                 setEndDate(e.target.value);
                                 setCurrentPage(1);
@@ -809,9 +719,9 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 focus:outline-none"
                     >
                         <option value="">All pairs</option>
-                        <option value="XAUUSD">XAUUSD</option>
-                        <option value="EURUSD">EURUSD</option>
-                        <option value="GBPUSD">GBPUSD</option>
+                        {[...new Set(trades.map((trade) => trade.pair).filter(Boolean))]
+                            .sort((first, second) => first.localeCompare(second))
+                            .map((pair) => <option key={pair} value={pair}>{pair}</option>)}
                     </select>
 
                     {/* Select Result Filter */}
@@ -855,7 +765,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                                 <tr>
                                     <td colSpan="9" className="py-8 text-center text-slate-400">No trades match these filters.</td>
                                 </tr>
-                            ) : filteredTrades.map((trade) => (
+                            ) : pageTrades.map((trade) => (
                                 <tr key={trade.id} className="hover:bg-slate-50/80 transition-colors">
                                     <td className="py-3.5 px-4 text-slate-500 font-medium whitespace-nowrap">
                                         {trade.date}
@@ -923,7 +833,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         <button
                             type="button"
                             onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                            disabled={currentPage === 1 || isTableBusy}
+                            disabled={visiblePage === 1 || isTableBusy}
                             className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50"
                         >
                             Previous
@@ -934,8 +844,8 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                                 type="button"
                                 onClick={() => setCurrentPage(page)}
                                 disabled={isTableBusy}
-                                aria-current={page === currentPage ? "page" : undefined}
-                                className={`min-w-8 px-2.5 py-1.5 border rounded-lg text-xs ${page === currentPage
+                                aria-current={page === visiblePage ? "page" : undefined}
+                                className={`min-w-8 px-2.5 py-1.5 border rounded-lg text-xs ${page === visiblePage
                                     ? "border-[#071B2B] bg-[#071B2B] text-white"
                                     : "border-slate-200 text-slate-600 hover:bg-slate-50"
                                     }`}
@@ -946,7 +856,7 @@ export default function Dashboard({ user = { email: "dekdipratiwi7@gmail.com" },
                         <button
                             type="button"
                             onClick={() => setCurrentPage((page) => Math.min(pagination.lastPage, page + 1))}
-                            disabled={currentPage >= pagination.lastPage || isTableBusy}
+                            disabled={visiblePage >= pagination.lastPage || isTableBusy}
                             className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50"
                         >
                             Next
